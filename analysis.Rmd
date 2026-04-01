@@ -1,0 +1,997 @@
+---
+title: 'Student Depression Analysis Project'
+output:
+  html_document:
+    toc: yes
+    df_print: paged
+  html_notebook:
+    toc: yes
+  pdf_document:
+    toc: yes
+    latex_engine: xelatex
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+library(corrplot)
+library(ggplot2)
+library(caret)
+library(e1071)
+library(rpart)
+library(partykit)
+library(ranger)
+library(party)
+library(MLmetrics)
+library(MASS)
+library(class)
+library(gridExtra)
+library(RColorBrewer)
+```
+
+# Introduction
+
+Depression is a growing concern, particularly among students and young professionals who often face significant academic, professional, and personal pressures. It is critical to identify individuals at risk early on to provide timely support and interventions. In this project we use data analysis and machine learning models to explore various factors potentially associated with depression, including academic pressure, sleep patterns, dietary habits, work-study hours, and demographic characteristics. By examining these factors, the aim is to understand the underlying relationships and identify patterns that can contribute to better mental health awareness and support systems.
+
+### Purpose 
+
+The primary goal of this project is to identify key factors associated with depression among students and young professionals and to build predictive models that can accurately identify individuals at risk. By analyzing variables like academic pressure, sleep patterns, dietary habits, work hours, and demographic characteristics, we seek to determine which factors are most strongly related to depression risk. While the focus is on prediction rather than inference, this knowledge can be used to create early warning systems and design interventions to address mental health issues effectively.
+
+### Measuring Effectiveness
+
+In this project, recall is prioritized over precision as the primary evaluation metric. Recall measures the proportion of actual cases of depression that are correctly identified by the model. This is crucial because missing someone who is truly at risk of depression (a false negative) could lead to severe consequences, such as not receiving the help they urgently need. While false positives (classifying someone as depressed when they are not) are not desirable either, they are far less harmful compared to false negatives. By focusing on recall, in this project we aim to ensure that as many at-risk individuals as possible are correctly identified.
+
+# Dataset 
+
+### Dataset Description
+
+We are starting with loading the **Student Depression Dataset**, downloaded from the kaggle.com.  
+  
+**Source**: [Kaggle - Student Depression Dataset](https://www.kaggle.com/datasets/adilshamim8/student-depression-dataset?resource=download)
+
+```{r}
+data <- read.csv("student_depression_dataset.csv")
+str(data)
+```
+
+This dataset comprises 27,901 observations and 18 variables, focusing on a study of mental health and depression, particularly among students. The target variable is **Depression**, which is binary (1 for depressed, 0 for not depressed), with the remaining variables serving as predictors. The numeric variables include Age, id, Academic.Pressure, Work.Pressure, CGPA, Study.Satisfaction, Job.Satisfaction, Work.Study.Hours, and Depression. Meanwhile, the categorical variables are Gender, City, Profession, Sleep.Duration, Dietary.Habits, Degree, Have.you.ever.had.suicidal.thoughts.., Financial.Stress, and Family.History.of.Mental.Illness.
+
+### Data Cleaning
+
+Now, we are going to look for any missing values present in our dataset.
+
+```{r}
+sum(is.na(data))
+sum(data == "?")
+sum(data$Financial.Stress == "?")
+```
+
+The dataset contains a small number of missing values in the form of "?". Specifically, there are three instances of "?" in the column **Financial.Stress**. Since this is a very small proportion of the dataset, these observations will be removed to ensure data quality.  
+  
+The following code was used to remove these observations:
+
+```{r}
+data <- data[data$Financial.Stress != "?", ]
+sum(data$Financial.Stress == "?")
+```
+
+After this operation, the dataset no longer contains any missing values.  
+  
+Now, we would like to continue with exploration of the non-zero values in the columns Work.Pressure and Job.Satisfaction, as they were found to contain small amount of the non-zero values during the manual dataset inspection.
+
+```{r}
+sum(data$Work.Pressure != 0)
+sum(data$Job.Satisfaction != 0) 
+sum(data$Profession != "Student")
+```
+
+The results show that the column **Work.Pressure** has only 3 non-zero values and **Job.Satisfaction** has only 8 non-zero values out of 27,901 observations. This indicates that the majority of values in these columns are zero. Similarly, the column **Profession** contains only 31 entries that are not categorized as 'Student'. Since we are focusing solely on students, we will retain only the entries where 'Profession' is 'Student'. As a result, the column Profession no longer holds any explanatory power and will be removed from the dataset.  
+  
+Moreover, since the number of non-zero values in these columns is extremely low compared to the total dataset size, these variables are unlikely to provide meaningful insights. Therefore, we have decided to exclude **Work.Pressure** **Job.Satisfaction**, **Profession** from further analysis to focus on variables that contribute more significantly to our objectives.
+
+```{r}
+data$Work.Pressure <- NULL
+data$Job.Satisfaction <- NULL
+# We further remove rows where Profession is not "Student", as we are interested only in students
+data <- data[data$Profession == "Student", ]
+data$Profession <- NULL
+dim(data)
+```
+
+The updated dataset, data, now consists of 27867 observations and 15 variables.
+
+
+### Exploratory Data Analysis (EDA)
+
+To begin with, we would like to use summary statistics of the dataset. This provides an overview of both numerical and categorical variables, helping us to identify any patterns at a glance.
+
+```{r}
+summary(data)
+```
+
+From the summary statistics we can describe the variables:  
+  
+1) **id**: A unique identifier for each observation, ranging from 2 to 140,699.  
+2) **Gender**: A categorical variable indicating the gender of individuals.  
+3) **Age**: A numeric variable ranging from 18 to 59 years, with a mean age of 25.82 years.  
+4) **City**: A categorical variable representing the city of residence.  
+5) **Academic.Pressure**: A numeric variable measuring academic pressure, with values ranging from 0 to 5 and a mean of 3.14.  
+6) **CGPA**: A numeric variable for cumulative grade point average, ranging from 0 to 10, with a mean of 7.66.  
+7) **Study.Satisfaction**: A numeric variable measuring satisfaction with studies, ranging from 0 to 5, with a mean of 2.94.  
+8) **Sleep.Duration**: A categorical variable representing sleep duration.  
+9) **Dietary.Habits**: A categorical variable capturing dietary habits.  
+10) **Degree**: A categorical variable indicating the degree pursued.  
+11) **Have.you.ever.had.suicidal.thoughts.**: A categorical variable asking whether individuals have ever had suicidal thoughts ("Yes"/"No").  
+12) **Work.Study.Hours**: A numeric variable indicating the combined hours spent on work and study, ranging from 0 to 12, with a mean of 7.157 hours.  
+13) **Financial.Stress**: A categorical variable measuring the level of financial stress experienced by individuals.  
+14) **Family.History.of.Mental.Illness**: A categorical variable indicating the presence or absence of a family history of mental illness.  
+15) **Depression**: The binary target variable that indicates whether an individual is experiencing depression (1) or not (0).  
+
+
+### Correlation Matrix
+
+Now, we would like to have a look at the correlation matrix, but to do that we first encode columns with "Yes"/"No" values as 1/0, so that we can include them too.
+
+```{r, fig.width=8, fig.height=6}
+# We create the new dataset for purpose of correlation matrix, as we do not 
+# want to alter the main one
+data_encoded <- data 
+
+binary_columns <- c("Have.you.ever.had.suicidal.thoughts..", 
+                    "Family.History.of.Mental.Illness")
+data_encoded[binary_columns] <- lapply(data_encoded[binary_columns], 
+                                       function(x) ifelse(x == "Yes", 1, 0))
+
+numeric_columns <- c("id", "Financial.Stress")
+data_encoded[numeric_columns] <- lapply(data_encoded[numeric_columns], as.numeric)
+
+# Now we exclude all the categorical variables
+data_encoded <- data_encoded[sapply(data_encoded, is.numeric)]
+
+correlation_matrix <- cor(data_encoded, use = "pairwise.complete.obs")
+correlation_matrix <- (correlation_matrix + t(correlation_matrix))/2
+
+corrplot(correlation_matrix, 
+         method = "color", 
+         addCoef.col = 'black', 
+         type = "lower",
+         diag = FALSE, 
+         number.cex = 0.7,
+         tl.cex = 0.8,  # Text label size
+         cl.cex = 0.8,  
+         tl.col = "black",
+         cl.pos = "r",
+         mar = c(0, 0, 1, 0),
+         title = "Correlation between variables")
+```
+
+From the correlation plot we can observe the following:  
+  
+Variable **Depression** is moderately positively correlated with Financial Stress (0.36), Have you ever had suicidal thoughts.. (0.55) and Academic Pressure (0.47), indicating these factors may contribute to higher depression levels. There is also a moderate-weak correlation with Work Study Hours (0.21). Additionally, variable Depression has a negative correlation with Study Satisfaction (-0.17) and Age (-0.23).  
+
+### Plots
+
+Now, we would like to have a deeper look into main predictors of the depression and some additional variables.
+
+```{r}
+p1 <- ggplot(data, aes(
+  x = as.factor(Academic.Pressure),
+  fill = factor(Depression, levels = c(0, 1), labels = c("No", "Yes"))
+)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Proportion of Depression by Academic Pressure",
+    x = "Academic Pressure (0 = Low, 5 = High)",
+    y = "Proportion",
+    fill = "Depression"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Pastel1")+
+  theme_minimal(base_size = 5)
+
+p2 <- ggplot(data, aes(
+  x = as.factor(Study.Satisfaction),
+  fill = factor(Depression, levels = c(0, 1), labels = c("No", "Yes"))
+)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Proportion of Depression by Study Satisfaction",
+    x = "Study Satisfaction (0 = Low, 5 = High)",
+    y = "Proportion",
+    fill = "Depression"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal(base_size = 5)
+
+# Boxplot for Academic Pressure vs. Depression
+brewer_colors <- brewer.pal(3, "Pastel1")
+p3 <- ggplot(data, aes(x = as.factor(Depression), y = Academic.Pressure, fill = as.factor(Depression))) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Academic Pressure vs. Depression",
+    x = "Depression (0 = No, 1 = Yes)",
+    y = "Academic Pressure",
+    fill = "Depression"
+  ) +
+  scale_fill_manual(
+    values = brewer_colors[1:2],  # Select 2 colors from Set 2
+    labels = c("0", "1")  # Customize the legend labels here
+  )+
+  theme_minimal(base_size = 5)
+
+# Boxplot for Financial Stress vs. Depression
+p4 <- ggplot(data, aes(x = as.factor(Depression), y = as.numeric(Financial.Stress), fill = as.factor(Depression))) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Financial Stress vs. Depression",
+    x = "Depression (0 = No, 1 = Yes)",
+    y = "Financial Stress",
+    fill = "Depression"
+  ) +
+  scale_fill_manual(
+    values = brewer_colors[1:2],  # Select 2 colors from Set 2
+    labels = c("0", "1")  # Customize the legend labels here
+  ) +
+  theme_minimal(base_size = 5)
+
+
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+#### Academic Pressure and Depression
+
+1) Proportional Bar Chart: We can observe a clear upward trend in depression prevalence (blue bars) as academic pressure increases. Students experiencing higher academic pressure (levels 4 and 5) report higher rates of depression.
+
+2) Boxplot: From a bit different type of visualisation, we can observe that students with depression report significantly higher academic pressure compared to those without.
+
+#### Study Satisfaction and Depression
+
+From the proportional bar chart we can observe that depression rates decline as study satisfaction increases. Students most satisfied with their studies (level 5) show the lowest prevalence of depression.
+
+#### Financial Stress and Depression
+
+From the boxplot we can see that students experiencing depression tend to report higher financial stress levels, suggesting a strong link between financial pressure and mental health challenges.
+
+```{r}
+p5 <- ggplot(data, aes(x = as.factor(Depression), y = Age, fill = Gender)) +
+  geom_boxplot() +
+  labs(title = "Age Distribution by Depression Status and Gender",
+       x = "Depression",
+       y = "Age") + scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal(base_size = 5)
+
+sleep <- factor(
+  data$Sleep.Duration,
+  levels = c("'Less than 5 hours'", "'5-6 hours'", "'7-8 hours'", "'More than 8 hours'", "Others"))
+
+p6 <- ggplot(data, aes(
+  x = sleep,
+  fill = factor(Depression, levels = c(0, 1), labels = c("No", "Yes"))
+)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Proportion of Depression by Sleep Duration Group",
+    x = "Sleep Duration (hours)",
+    y = "Proportion",
+    fill = "Depression"
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Pastel1") +
+  theme_minimal(base_size = 5)
+
+p7 <- ggplot(data, aes( x = factor(Dietary.Habits), fill = factor(Depression, levels = c(0, 1), labels = c("No", "Yes")) )) + geom_bar(position = "fill") + labs( title = "Depression Proportions by Dietary Habits", x = "Dietary Habits", y = "Proportion", fill = "Depression" ) + scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette = "Pastel1") + theme_minimal(base_size = 5)
+
+p8 <- ggplot(data, aes( x = factor(Have.you.ever.had.suicidal.thoughts..), fill = factor(Depression, levels = c(0, 1), labels = c("No", "Yes")) )) + geom_bar(position = "fill") + labs( title = "Depression Proportions by Suicidal Thoughts", x = "Suicidal Thoughts (0 = No, 1 = Yes)", y = "Proportion", fill = "Depression" ) + scale_y_continuous(labels = scales::percent) + scale_fill_brewer(palette = "Pastel1") + theme_minimal(base_size = 5)
+
+categorical_grid_top <- grid.arrange(p5, p6, p7,p8,  ncol = 2) 
+
+
+
+```
+
+#### Age, Gender, and Depression
+
+In simular manner, from the plotted boxplot we can observe that age distributions for depressed and non-depressed students are similar, with slightly more outliers among non-depressed females. No significant age trend is evident, though male students appear slightly older on average.
+
+#### Sleep Duration and Depression
+
+From the proportional bar chart, we can see that students who sleep more than 8 hours have the lowest depression rates. Short sleep durations (less than 5 hours) are associated with higher depression prevalence
+
+#### Dietary Habits and Depression
+
+This proportional bar chart shows a clear trend, that students with depression report eating unhealthier food. Participants with healthy eating habits report having depression 50% of the time, while nearly three out of fours with unhealthy eating habits report depression.
+
+#### Suicidal Thoughts and Depression
+
+As one might expect, students who had suicidal thoughts, are more likely to report depression. Surprisingly, students without depression still report having suicidal thoughts 25% of the time, as shown in the proportional bar chart.
+
+### Outlier Detection
+
+We will now take a closer look at the outliers in our dataset, focusing specifically on the numeric columns. To achieve this, we will use the Inter-Quartile Range (IQR) method to calculate and display the upper and lower boundaries for each numeric feature, along with the corresponding outlier values.
+
+```{r}
+# Outliers detection using IQR for numeric features
+data_subset <- data[, -c(1, 15)]
+
+# Identify numeric columns
+numeric_cols <- sapply(data_subset, is.numeric)
+numeric_col_names <- names(data_subset)[numeric_cols]
+
+# Detect outliers using IQR
+outliers <- lapply(numeric_col_names, function(col_name) {
+  column <- data_subset[[col_name]]
+  Q1 <- quantile(column, 0.25, na.rm = TRUE)
+  Q3 <- quantile(column, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  
+  # Boundaries for normal values and outliers
+  cat("Feature:", col_name, "\n")
+  cat("Lower Bound:", lower_bound, "\n")
+  cat("Upper Bound:", upper_bound, "\n")
+  cat("Outlier Values:\n")
+  
+  outlier_values <- column[column < lower_bound | column > upper_bound]
+  print(outlier_values)
+  
+  cat("\n")
+  
+  list(
+    lower_bound = lower_bound,
+    upper_bound = upper_bound,
+    outlier_values = outlier_values
+  )
+})
+
+# Assign names to the output list
+names(outliers) <- numeric_col_names
+```
+
+1) **Feature: Age**
+The normal range for the feature Age is between 7.5 and 43.5. Values outside this range are considered outliers. The outliers detected for this feature are: 58, 49, 51, 44, 46, 59, 54, 48, 56, 46, 48, 48. These values represent unusually high ages compared to the rest of the dataset.
+
+2) **Feature: Academic.Pressure**
+The normal range for the feature Academic.Pressure is between -1 and 7. No outliers were found for this feature, meaning all data points fall within the expected range.
+
+3) **Feature: CGPA**
+The normal range for the feature CGPA is between 2.345 and 12.865. The outliers detected for this feature are: 0, 0, 0, 0, 0, 0, 0, 0, 0, 0. These values of 0 are significantly below the lower bound and may indicate missing or erroneous data.
+
+4) **Feature: Study.Satisfaction**
+The normal range for the feature Study.Satisfaction is between -1 and 7. No outliers were found for this feature, indicating that all values are within the expected range.
+
+5) **Feature: Work.Study.Hours**
+The normal range for the feature Work.Study.Hours is between -5 and 19. No outliers were detected for this feature, meaning all values are within the acceptable range.
+
+
+### Duplicated Data
+Now, we would like to further check for the duplicates present in our dataset.
+
+```{r}
+if (any(duplicated(data))) {
+  cat("The dataset contains duplicates. Here are the duplicated rows:\n")
+  duplicates <- data[duplicated(data) | duplicated(data, fromLast = TRUE), ]
+  print(duplicates)
+} else {
+  cat("The dataset does not contain any duplicates.\n")
+}
+```
+
+With the following code, we further confirmed that there are no duplicates in our dataset.
+
+
+# Supervised Learning Methods
+
+## 1. Logistic Regression
+
+We will perform logistic regression to predict Depression, as it is a binary variable. The `Financial.Stress` variable, which represents an ordered scale from 1 to 5, is transformed into a numeric format to simplify the model and maintain interpretability. Additionally, the level order in Sleep.Duration and Dietary.Habits variables are changed to better highlight how deviation from standard healthy behavior can have an impact on having depression.
+
+```{r, fig.width=18}
+data$Depression <- factor(data$Depression, levels = c(0, 1), labels = c("No", "Yes"))
+
+data$Financial.Stress <- as.numeric(data$Financial.Stress)
+
+data$Sleep.Duration <- gsub("'", "", data$Sleep.Duration)
+data$Sleep.Duration <- factor(data$Sleep.Duration,
+                          levels = c('More than 8 hours', '7-8 hours', '5-6 hours', 
+                                     'Less than 5 hours', 'Others'))
+
+data$Dietary.Habits <- factor(data$Dietary.Habits,
+                          levels = c('Healthy', 'Moderate', 'Unhealthy',  
+                                     'Others'))
+
+
+m <- glm(Depression ~ ., data = data, family = binomial())
+summary(m)
+```
+
+Based on the summary statistics, the variables **id**, **City**, and **Degree** generally do not provide significant explanatory value for predicting the outcome. While specific categories within the **Degree** variable, such as DegreeBSc and DegreeLLM, show statistical significance (two stars), and DegreeM.Ed has one star significance, the overall contribution of the **Degree** variable is limited. Including Degree risks overfitting due to its 28 sparse categories, which do not add meaningful predictive value and lack a strong theoretical connection to mental health outcomes. Therefore, we exclude **id**, **City**, and **Degree** from the model to improve interpretability and avoid unnecessary complexity. And now we are going to have a look into the new logistic model and fully describe it. Additionally, we will prepare the training and test data split (80% - training data and 20% - test data).
+
+```{r, fig.width=18}
+data_n <- data
+data_n$id <- NULL
+data_n$City <- NULL
+data_n$Degree <- NULL
+
+
+set.seed(123)
+
+n <- nrow(data_n) 
+n1 <- 0.8 * n
+id_train <- sample(1:n, n1)
+
+trainingdata <- data_n[id_train, ]
+testdata  <- data_n[-id_train, ]
+
+m1 <- glm(Depression ~ ., data = trainingdata, family = binomial())
+summary(m1)
+```
+
+The model shows that the following variables have a significant relationship with depression at a p < 0.05 significance level:  
+
+- **Age**: Negative relationship, suggesting younger people have higher odds of depression (p < 2e-16)
+- **Academic.Pressure**: Positive relationship with depression (p < 2e-16)
+- **CGPA**: Positive relationship with depression (p = 8.30e-05)
+- **Study.Satisfaction**: Negative relationship with depression (p < 2e-16)
+- **Sleep Duration**:
+  - specifically students that sleep **"7-8 hours"** has a significant positive relationship (p = 1.98e-06) compared to reference group 'More than 8 hours'.
+  - specifically students that sleep **"5-6 hours"** has a significant positive relationship (p = 1.92e-05) compared to reference group 'More than 8 hours'.
+  - specifically students that sleep **"Less than 5 hours"** has a significant positive relationship (p = < 2e-16) compared to reference group 'More than 8 hours'.
+- **Dietary.Habits**
+  - specifically students that have **"Moderate"** dietary habits have a significant positive relationship (p < 2e-16) compared to reference group 'Healthy'.
+  - specifically students that have **"Unhealthy"** dietary habits have a significant positive relationship (p < 2e-16) compared to reference group 'Healthy'. This category has the coefficient with the third highest absolute value, after the intercept and the suicidal thoughts variable.
+- **Suicidal Thoughts**: Having suicidal thoughts shows a very strong positive relationship with depression (p < 2e-16)
+- **Work/Study Hours**: Positive relationship with depression (p < 2e-16)
+- **Financial Stress**: Positive relationship with depression (p < 2e-16)
+- **Family History of Mental Illness**: Having a family history shows a significant positive relationship with depression (p = 1.07e-09)
+
+## 2. Stepwise ("both directions") Logistic Regression model
+
+Now we perform mixed step-wise model selection on the training sample. The model with the lowest AIC is chosen as a result.
+
+```{r}
+glm_step <- step(m1)
+```
+
+```{r, fig.width=18}
+summary(glm_step)
+```
+
+The new stepwise model shows that the following variables have a significant relationship with depression at a p < 0.05 significance level:
+
+- **Age**: Negative relationship, suggesting older people show lower levels of depression (p < 2e-16).
+- **Academic.Pressure**: Strong positive relationship with depression (p < 2e-16).
+- **CGPA**: Slight positive relationship with depression (p = 8.04e-05).
+- **Study.Satisfaction**: Negative relationship with depression (p < 2e-16).
+- **Sleep Duration**:
+  - **"7-8 hours"** has a significant positive relationship (p = 1.99e-06) compared to reference group 'More than 8 hours'.
+  - **"5-6 hours"** has a significant positive relationship (p = 1.91e-05) compared to reference group 'More than 8 hours'.
+  - **"Less than 5 hours"** has a significant positive relationship (p = < 2e-16) compared to reference group 'More than 8 hours'.
+- **Dietary.Habits**
+  - **"Moderate"** habits have a significant positive relationship (p < 2e-16) compared to reference group 'Healthy'.
+  - **"Unhealthy"** habits have a significant positive relationship (p < 2e-16) compared to reference group 'Healthy'.
+- **Suicidal Thoughts**: Having suicidal thoughts shows a very strong positive relationship with depression (p < 2e-16)
+- **Work/Study Hours**: There is a positive relationship with depression (p < 2e-16)
+- **Financial Stress**: Strong positive relationship with depression (p < 2e-16)
+- **Family History of Mental Illness**: Having a family history shows a significant positive relationship (p = 1.08e-09)
+
+The model is overall very similar to the regular logistic regression model. Some p-values and coefficients have changed and one not significant predictor Gender was excluded.
+
+
+#### Comparison Logistic Regression and Stepwise Logistic Regression
+
+Models can be compared based on AIC:
+
+```{r}
+AIC(m1, glm_step)
+```
+
+The stepwise logistic regression model performs better than logistic regression (lower AIC is better), therefore we will use only the stepwise model from here onwards.
+
+#### Confusion Matrix
+
+To evaluate the performance of the step model, we analyze the confusion matrix.
+
+```{r}
+predicted_p_glm_step <- predict(glm_step, newdata = testdata, type = "response")
+predicted_glm_step <- ifelse(predicted_p_glm_step > 0.5, "Yes", "No")
+predicted_glm_step <- factor(predicted_glm_step, levels = c("No", "Yes"))
+actual <- testdata$Depression
+
+# Confusion matrix
+conf_matrix_glm <- confusionMatrix(predicted_glm_step, actual)
+
+# Extract metrics confusionMatrix 
+glm_accuracy <- conf_matrix_glm$overall["Accuracy"]
+glm_precision <- conf_matrix_glm$byClass["Pos Pred Value"]
+glm_recall <- conf_matrix_glm$byClass["Sensitivity"]
+glm_f1 <- conf_matrix_glm$byClass["F1"]
+
+glm_metrics2 <- data.frame(
+  Model = "GLM (Stepwise)",
+  Accuracy = glm_accuracy,
+  Precision = glm_precision,
+  Recall = glm_recall,
+  F1_Score = glm_f1
+)
+
+print(glm_metrics2)
+```
+
+From the Confusion Matrix for the step-wise logistic regression performed before, we can make the following statements:
+
+- Accuracy (0.8471): The model correctly classified 84.71% of all instances, indicating good overall performance.
+- Precision (0.8259): Out of all the positive predictions made by the model, 82.59% were actually correct. This indicates the model is effective at minimizing false positives.
+- Recall (0.7955): The model identified 79.55% of all actual positive cases, reflecting its ability to minimize false negatives.
+- F1-Score (0.8104): The harmonic mean of Precision and Recall is 81.04%, showing a good balance between the two, which is particularly relevant when the dataset is imbalanced.
+
+Overall, the model demonstrates strong out-of-sample performance with a solid balance between correctly identifying positive cases and avoiding false positives. Given that recall is the primary metric of interest, the model shows promising results in identifying the majority of actual positive instances.
+
+
+## 3. K-NN Model
+
+We estimate the k-NN model on the training set, using the caret package to do a 5-fold cross-validation exercise to pick the appropriate k. Additionally, we also scale the data.
+
+```{r fig.weidth = 12} 
+set.seed(123)
+# Set up fitControl:
+fitControl <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = prSummary, savePredictions = "final")
+
+# Scale the data:
+train_scaled <- trainingdata
+test_scaled <- testdata
+
+num_cols <- sapply(train_scaled, is.numeric)
+train_scaled[, num_cols] <- scale(train_scaled[, num_cols])
+
+# Scale test set using training set mean and sd:
+means <- sapply(trainingdata[, num_cols], mean)
+sds <- sapply(trainingdata[, num_cols], sd)
+test_scaled[, num_cols] <- scale(test_scaled[, num_cols], center = means, scale = sds)
+
+# Apply KNN on training data:
+knnFit <- train(Depression ~ ., data = train_scaled,  
+                method = "knn",
+                trControl = fitControl,
+                tuneGrid = data.frame(k = c(3, 5, 7, 9, 11, 13, 15)),
+                metric = "Recall")
+knnFit
+plot(knnFit, main = "Optimal k Selection for k-NN")
+```
+
+As a result, k values of 3, 5, 7, 9, 11, 13, and 15 were tested, and the model with k = 15 was chosen as the optimal model, as it yielded the highest recall (0.7509423). This means the model correctly identifies approximately 75% of all actual depression cases. While the differences in recall across the models were relatively small, the recall of the 15-nearest neighbors model was 1.3% higher than that of the 3-nearest neighbors model. Additionally, the chosen model also achieved the highest precision (0.8390105) and F1-score (0.7924524). 
+
+#### Confusion Matrix
+
+To evaluate the performance of the k-NN model, we analyze the confusion matrix.
+
+```{r}
+# Prediction
+predicted_probs_knn <- predict(knnFit, newdata = test_scaled, type = "prob")[, "Yes"]
+predicted_knn <- ifelse(predicted_probs_knn > 0.5, "Yes", "No")
+
+predicted_knn <- factor(predicted_knn, levels = c("No", "Yes"))
+actual <- factor(test_scaled$Depression, levels = c("No", "Yes"))
+
+# Confusion matrix
+conf_matrix_knn <- confusionMatrix(predicted_knn, actual)
+
+# Extract metrics from confusionMatrix
+knn_accuracy <- conf_matrix_knn$overall["Accuracy"]
+knn_precision <- conf_matrix_knn$byClass["Pos Pred Value"]
+knn_recall <- conf_matrix_knn$byClass["Sensitivity"]
+knn_f1 <- conf_matrix_knn$byClass["F1"]
+
+knn_metrics2 <- data.frame(
+  Model = "k-NN",
+  Accuracy = knn_accuracy,
+  Precision = knn_precision,
+  Recall = knn_recall,
+  F1_Score = knn_f1
+)
+
+print(knn_metrics2)
+```
+
+From the Confusion Matrics for the k-nn performed before, we can make the following statements:
+
+- Accuracy (0.8323): The model correctly classified 83.23% of all instances, indicating solid overall performance.
+- Precision (0.8224): Out of all the positive predictions made by the model, 82.24% were correct, demonstrating reasonable control over false positives.
+- Recall (0.7545): The model successfully identified 75.45% of actual positive cases.
+- F1-Score (0.787): The harmonic mean of Precision and Recall is 78.7%, indicating a good balance between the two metrics.
+
+This performance means the k-NN model is slightly worse at correctly detecting people with depression than the logistic regression.
+
+
+## 4. Naive Bayes Model
+
+```{r}
+nbFit <- naiveBayes(Depression ~ ., data = trainingdata)
+nbFit
+```
+
+The A-priori Probability, showing the default likelihood of the two possible outcomes occurring in the training data, are:
+
+#0 (person doesn't have depression): 41.59 %  
+#1 (person has depression): 58.41 %
+
+There are more people with depression in our dataset, than without. Any model must perform better than 58.41% accuracy to be useful (since always predicting "1" would give this level of accuracy).
+
+- **Age**: Depressed individuals are considerably younger (24.87 vs 27.16 years) - Younger age may correlate with higher depression risk.
+- **Academic Pressure**: Significantly higher for depressed individuals (3.70 vs 2.36) - High academic pressure can be linked to depression.
+- **Suicidal Thoughts**: 85.39% of depressed individuals have had suicidal thoughts and only 32.12% of non-depressed - Those with suicidal thoughts are far more likely to be depressed.
+- **Work.Study.Hours**: Depressed individuals work/study more (7.78 vs 6.23).
+- **Financial Stress**: Considerably higher for depressed individuals (3.58 vs 2.51) - Financial stress can increase depression risk.
+- **Sleep Duration**: "Less than 5 hours" is more common in depressed individuals (32.53% vs 25.67%), while "More than 8 hours" is less common (18.94% vs 25.44%) - Short sleep duration is associated with depression.
+- **Dietary Habits**: "Unhealthy" habits are much more common in depressed individuals (44.45% vs 26.06%), while "Healthy" habits are less common (21.59% vs 36.34%)
+- **Study Satisfaction** is slightly lower (2.74 vs 3.20) for depressed individuals.
+- **Family History of Mental Illness**  is a bit more common (50.49% vs 45.36%) in depressed individuals.
+- **Gender** and **CGPA** shows practically no difference.
+
+#### Confusion Matrix
+
+To evaluate the performance of the Naive Bayes model, we analyze the confusion matrix.
+
+```{r}
+predicted_probs_nb <- predict(nbFit, newdata = testdata)
+
+# Create confusion matrix
+conf_matrix_nb <- confusionMatrix(predicted_probs_nb, testdata$Depression)
+
+# Extract metrics from confusionMatrix 
+nb_accuracy <- conf_matrix_nb$overall["Accuracy"]
+nb_precision <- conf_matrix_nb$byClass["Pos Pred Value"]
+nb_recall <- conf_matrix_nb$byClass["Sensitivity"]
+nb_f1 <- conf_matrix_nb$byClass["F1"]
+
+nb_metrics2 <- data.frame(
+  Model = "Naive Bayes",
+  Accuracy = nb_accuracy,
+  Precision = nb_precision,
+  Recall = nb_recall,
+  F1_Score = nb_f1
+)
+
+print(nb_metrics2)
+```
+
+From the Confusion Matrix for the k-NN performed before, we can make the following statements:
+
+- Accuracy (0.8466): The model correctly classified 84.66% of all instances, showcasing stronger overall performance than k-NN model, but weaker compared to logistic regression.
+- Precision (0.8253): Out of all positive predictions, 82.53% were accurate, indicating similar situation as with accuracy compared to other models
+- Recall (0.7947): The model identified 79.47% of actual positive cases, demonstrating its ability to minimize false negatives. However, the logistic regression model still outperforms in recall.
+- F1-Score (0.8097): The harmonic mean of Precision and Recall is 80.97%, reflecting a well-balanced performance between identifying positive cases and avoiding false positives.
+
+This model's metrics suggest better performance compared the k-NN model, but a slightly worse one than of the logistic regression.
+
+
+## 5. Classification Tree Model
+
+```{r, fig.width=12, fig.height=12}
+trainingdata$Depression <- factor(trainingdata$Depression)
+tree <- rpart(Depression ~ ., data = trainingdata)
+plot(as.party(tree))
+```
+
+The classification tree analyzes factors related to suicidal thoughts, with the root node asking if someone has experienced suicidal thoughts before branching into different paths. For those who answered "No," the model evaluates academic pressure using a threshold of 3.5, with those below this level classified into Node 3 (n=5949), while those above this threshold are further assessed based on financial stress. Those who answered "Yes" to suicidal thoughts are evaluated on academic pressure with a lower threshold of 2.5; if their academic pressure is below 2.5, they're further classified by financial stress, but if it's 2.5 or higher, they go directly to Node 11, which contains the largest population (n=10784) and displays the highest proportion of risk in its bar graph. The tree suggests that both academic pressure and financial stress are important predictors, with different threshold levels mattering depending on whether someone has already experienced suicidal thoughts, making Node 11 (individuals with suicidal thoughts and academic pressure ≥2.5) the highest risk group.
+
+#### Confusion Matrix
+
+To evaluate the performance of the classification tree model, we analyze the confusion matrix.
+
+```{r}
+predicted_probs_tree <- predict(tree, newdata = testdata, type = "class")
+conf_matrix <- confusionMatrix(predicted_probs_tree, testdata$Depression)
+
+# Extract confusion Matrix components
+accuracy <- conf_matrix$overall["Accuracy"]
+precision <- conf_matrix$byClass["Pos Pred Value"]
+recall <- conf_matrix$byClass["Sensitivity"]
+f1 <- conf_matrix$byClass["F1"]
+
+# Create metrics dataframe
+metrics_tree2 <- data.frame(
+  Model = "Classification Tree",
+  Accuracy = accuracy,
+  Precision = precision,
+  Recall = recall,
+  F1_Score = f1
+)
+
+print(metrics_tree2)
+```
+
+From the Confusion Matrics for the classification tree performed before, we can make the following statements:
+
+- Accuracy (81.77%): The model correctly classified approximately 82% of all test instances, making it the worst one at Accuracy so far.
+- Precision (82.09%): When the model predicted a positive case , it was correct about 82% of the time, indicating a similar position as with Accuracy compared to other models.
+- Recall (71.12%): The model successfully identified about 71% of actual positive cases, showing a much worse performance compared to out other models.
+- F1-Score (76.22%): The harmonic mean of precision and recall indicates the same situation as with all the other metrics, when comparing to other models.
+
+Overall, the classification tree model is inferior to all the other models regarding all the metrics.
+
+## 6. Random Forest Model
+
+```{r}
+rf <- ranger(Depression ~ ., data = trainingdata, probability = TRUE, importance = "permutation")
+print(rf)
+```
+
+The model uses 500 trees and 11 predictors on a dataset of 22,293 observations, with 3 variables evaluated per split (mtry=3) and nodes grown to ≤10 observations for depth control. It outputs depression probabilities and achieves strong calibration, indicated by the Brier score of around 0.113 (with 0.25 representing random guessing). While variable importance isn’t displayed, the permutation method ranks predictors by how much shuffling them increases error—likely highlighting suicidal thoughts, financial stress, and sleep as key drivers.
+
+```{r} 
+# Get the importance values
+importance_values <- importance(rf)
+
+# Create a data_new frame for ggplot
+importance_df <- data.frame(Feature = names(importance_values), Importance = importance_values)
+
+# Sort the data_new frame by importance
+importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE), ]
+
+# Create a new column for color based on importance
+importance_df$Color <- ifelse(importance_df$Importance == max(importance_df$Importance), 
+                              "grey", "#003c75")
+
+# Create the plot using ggplot2
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance, fill = Color)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + # Flip the coordinates for better readability
+  labs(x = "Features", y = "Importance", title = "Most important features to predict depression") +
+  scale_fill_identity() +  # Use the fill values directly
+  theme_minimal() +
+  theme(legend.position = "none") # Remove the legend“
+```
+
+The most critical predictor is "Have you ever had suicidal thoughts...", showing the highest importance score, which aligns with common knowledge that suicidal thoughts are strongly linked to depression. Following this, Academic Pressure and Financial Stress emerge as significant contributors, reflecting how environmental stress impacts mental health. Age and Work Study Hours also play notable roles, suggesting younger individuals and those with heavier workloads may be more vulnerable. Lifestyle factors like Dietary Habits, Sleep Duration, and Study Satisfaction appear moderately influential, while CGPA, Family History of Mental Illness, and Gender show relatively lower importance, indicating weaker associations with depression in the model.
+
+#### Partial Dependency Visualisations
+
+Now that we have identified the most important features, we can create visualizations for the top three predictors (suicidal thoughts, academic pressure, and financial stress). This will help us further explore and understand the relationships between these predictors and Depression, providing deeper insights into their impact.
+
+```{r}
+
+trainingdata$Have.you.ever.had.suicidal.thoughts.. <- as.factor(trainingdata$Have.you.ever.had.suicidal.thoughts..)
+
+grd <- levels(trainingdata$Have.you.ever.had.suicidal.thoughts..)
+pdp_data <- data.frame()
+
+
+for (i in 1:length(grd)) {
+  
+  temp_data <- trainingdata
+  temp_data$Have.you.ever.had.suicidal.thoughts.. <- factor(grd[i], levels = grd)
+  
+  p <- predict(rf, data = temp_data, type = "response")$predictions[, "Yes"]
+  pdp_data <- rbind(pdp_data, data.frame(Level = grd[i], Predicted_Probability = p))
+}
+
+p1<- ggplot(pdp_data, aes(x = Level, y = Predicted_Probability)) +
+  geom_boxplot(fill = "lightblue", color = "darkblue") +
+  labs(
+    title = "Partial Dependence: Suicidal Thoughts",
+    x = "Have you ever had suicidal thoughts?",
+    y = "Predicted Probability of Depression ('Yes')"
+  ) +
+  theme_minimal(base_size = 5)
+
+# Academic Pressure
+trainingdata$Academic.Pressure <- as.factor(trainingdata$Academic.Pressure)
+
+grd_academic <- levels(trainingdata$Academic.Pressure)
+pdp_data_academic <- data.frame()
+
+for (i in 1:length(grd_academic)) {
+  
+  temp_data <- trainingdata
+  temp_data$Academic.Pressure <- factor(grd_academic[i], levels = grd_academic)
+  
+  p <- predict(rf, data = temp_data, type = "response")$predictions[, "Yes"]
+  pdp_data_academic <- rbind(pdp_data_academic, data.frame(Level = grd_academic[i], Predicted_Probability = p))
+}
+
+p2<- ggplot(pdp_data_academic, aes(x = Level, y = Predicted_Probability)) +
+  geom_boxplot(fill = "lightgreen", color = "darkgreen") +
+  labs(
+    title = "Partial Dependence: Academic Pressure",
+    x = "Academic Pressure Levels",
+    y = "Predicted Probability of Depression ('Yes')"
+  ) +
+  theme_minimal(base_size = 5)
+
+
+# Financial Stress
+trainingdata$Financial.Stress <- as.factor(trainingdata$Financial.Stress)
+
+grd_financial <- levels(trainingdata$Financial.Stress)
+pdp_data_financial <- data.frame()
+
+for (i in 1:length(grd_financial)) {
+  
+  temp_data <- trainingdata
+  temp_data$Financial.Stress <- factor(grd_financial[i], levels = grd_financial)
+  
+  p <- predict(rf, data = temp_data, type = "response")$predictions[, "Yes"]
+  pdp_data_financial <- rbind(pdp_data_financial, data.frame(Level = grd_financial[i], Predicted_Probability = p))
+}
+
+p3 <- ggplot(pdp_data_financial, aes(x = Level, y = Predicted_Probability)) +
+  geom_boxplot(fill = "lightcoral", color = "darkred") +
+  labs(
+    title = "Partial Dependence: Financial Stress",
+    x = "Financial Stress Levels",
+    y = "Predicted Probability of Depression ('Yes')"
+  ) +
+  theme_minimal(base_size = 5)
+
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+
+1) Partial Dependence: Suicidal Thoughts:
+
+This plot shows how the predicted probability of depression changes based on whether an individual has ever had suicidal thoughts. Individuals who answered "Yes" have a significantly higher predicted probability of depression compared to those who answered "No."
+
+2) Partial Dependence: Academic Pressure:
+
+This plot illustrates the relationship between academic pressure levels and the predicted probability of depression. As academic pressure increases, the predicted probability of depression generally rises, indicating a positive correlation.
+
+3) Partial Dependence: Financial Stress:
+
+This plot demonstrates how financial stress levels affect the predicted probability of depression. Higher financial stress levels correspond to an increase in the predicted probability of depression, highlighting its strong impact.
+
+#### Confusion Matrix
+
+To evaluate the performance of the random forest model, we analyze the confusion matrix.
+
+```{r}
+# Get predictions
+predicted_probs_rf <- predict(rf, data = testdata, type = "response")$predictions
+predicted_rf <- ifelse(predicted_probs_rf[,2] > 0.5, "Yes", "No")
+
+# Ensure factors have matching levels
+actual <- factor(testdata$Depression, levels = c("No", "Yes"))
+predicted_rf <- factor(predicted_rf, levels = c("No", "Yes"))
+
+# Using caret for confusion matrix (more robust)
+conf_matrix <- confusionMatrix(predicted_rf, actual)
+
+# Extract metrics directly from confusionMatrix
+accuracy <- conf_matrix$overall["Accuracy"]
+precision <- conf_matrix$byClass["Pos Pred Value"]
+recall <- conf_matrix$byClass["Sensitivity"]
+f1 <- conf_matrix$byClass["F1"]
+
+metrics_rf2 <- data.frame(
+  Model = "Random Forest",
+  Accuracy = accuracy,
+  Precision = precision,
+  Recall = recall,
+  F1_Score = f1
+)
+print(metrics_rf2)
+```
+
+
+From the Confusion Matrix for the random forest performed before, we can make the following statements:
+
+- Accuracy (84.34%): Approximately 84% of all predictions were correct, indicating good overall performance and 3rd best result compared to other models.
+- Precision (82.01%): Of all the positive predictions made by the model, around 82% were correct — suggesting 4th best performance, only better than k-NN.
+- Recall (79.25%): The model was able to identify approximately 79% of the actual positive cases, maintaining strong sensitivity and 3rd best result, after logistic regression and Naive Bayes.
+- F1-Score (80.6%): This balanced metric reflects strong performance by harmonizing both precision and recall.
+
+Overall, the random forest model has a strong performance, having 3rd best result in recall, after logistic regression and Naive Bayes, only falling short of 0.3% from the best performing model.
+
+# Model Evaluation
+
+### Combined Confusion Matrix
+```{r}
+all_metrics <- rbind(glm_metrics2, knn_metrics2, nb_metrics2, metrics_tree2, metrics_rf2)
+print(all_metrics)
+```
+
+From the combined confusion matrix we can see the following results:
+
+- GLM (Stepwise): Shows the best overall balance, with the highest accuracy and strong recall, making it a top candidate.
+- k-NN: Lower recall compared to GLM, indicating more false negatives; less suitable when recall is prioritized.
+- Naive Bayes: Very comparable to GLM in all metrics, with nearly identical recall. A solid alternative.
+- Classification Tree: Lowest recall among all models, indicating it misses more actual positive cases; not ideal for this project.
+- Random Forest: Competitive performance and good recall, though slightly behind GLM and Naive Bayes.
+
+Overall, the GLM (Stepwise) model achieved the best combination of metrics, particularly in recall (0.7955), making it the most suitable choice for this project. Naive Bayes and Random Forest also performed well and can be considered as backup models. Models like k-NN and Classification Tree are less favorable due to their lower recall.
+
+### 10 Fold Cross-Validation 
+
+```{r fig.width=12, fig.height=12}
+# Data Preprocessing
+data_n$Financial.Stress <- as.numeric(data_n$Financial.Stress)
+
+# 10 folds for cross-validation
+set.seed(123)
+folds <- createFolds(data_n$Depression, k = 10, list = TRUE, returnTrain = TRUE)
+
+# Creating the placeholders for results
+recall_scores <- data.frame(step_glm = numeric(), knn = numeric(), naive_bayes = numeric(), tree = numeric(), random_forest = numeric())
+
+# Scaling numeric variables once for all folds
+numeric_cols <- sapply(data_n, is.numeric)
+data_new_scaled <- data_n
+data_new_scaled[, numeric_cols] <- lapply(data_n[, numeric_cols], scale)
+
+for (fold_index in 1:10) {
+  
+  # Here we are splitting data into training and test sets
+  train_indices <- folds[[fold_index]]
+  training_data <- data_new_scaled[train_indices, ]
+  test_data <- data_new_scaled[-train_indices, ]
+  
+  # Stepwise Logistic Regression (as it has lower AIC compared to Logistic)
+  base_model <- glm(Depression ~ ., data = training_data, family = "binomial")
+  step_model <- step(base_model, direction = "both", trace = 0)  # Use stepwise selection
+  step_predictions <- predict(step_model, newdata = test_data, type = "response")
+  step_pred_class <- ifelse(step_predictions > 0.5, "Yes", "No")
+  step_conf_matrix <- confusionMatrix(factor(step_pred_class, levels = c("No", "Yes")), 
+                                      test_data$Depression)
+  
+  # k-NN Model
+  knn_model <- train(Depression ~ ., data = training_data,  
+                     method = "knn",
+                     trControl = trainControl(method = "none"),  
+                     tuneGrid = data.frame(k = 15),  
+                     metric = "Recall")
+  knn_predictions <- predict(knn_model, newdata = test_data)
+  knn_conf_matrix <- confusionMatrix(knn_predictions, test_data$Depression)
+  
+  # Naive Bayes
+  nb_model <- naiveBayes(Depression ~ ., data = training_data)
+  nb_predictions <- predict(nb_model, newdata = test_data)
+  nb_conf_matrix <- confusionMatrix(nb_predictions, test_data$Depression)
+  
+  # Decision Trees
+  tree_model <- rpart(Depression ~ ., data = training_data)
+  tree_predictions <- predict(tree_model, newdata = test_data, type = "class")
+  tree_conf_matrix <- confusionMatrix(tree_predictions, test_data$Depression)
+  
+  # Random Forest
+  rf_model <- ranger(Depression ~ ., data = training_data, probability = TRUE, importance = "permutation")
+  rf_predictions <- predict(rf_model, data = test_data)$predictions
+  rf_pred_class <- ifelse(rf_predictions[, 2] > 0.5, "Yes", "No")
+  rf_conf_matrix <- confusionMatrix(factor(rf_pred_class, levels = c("No", "Yes")), 
+                                    test_data$Depression)
+  
+  
+  recall_scores <- rbind(recall_scores, data.frame(
+    step_glm = step_conf_matrix$byClass["Recall"],
+    knn = knn_conf_matrix$byClass["Recall"],
+    naive_bayes = nb_conf_matrix$byClass["Recall"],
+    tree = tree_conf_matrix$byClass["Recall"],
+    random_forest = rf_conf_matrix$byClass["Recall"]
+  ))
+}
+
+
+boxplot(recall_scores,
+        ylab = "Recall (Sensitivity)",
+        col = c('plum', 'palevioletred', 'pink', 'lightblue', 'lightgreen'),
+        main = "10-Fold CV Recall Comparison")
+```
+
+From the 10-Fold CV Recall Comparison, we can observe that Naive Bayes and step-wise GLM have the highest median recall scores, both around 0.79–0.80, indicating they are most effective at capturing true positives. Random forest also performs well, with a slightly lower median recall near 0.78. KNN has a moderate recall (around 0.75), while the decision tree model has the lowest recall, with a median near 0.72.  Overall, naive Bayes and step-wise GLM outperform the other models in terms of recall, while the decision tree lags behind.
+
+# Future Work
+
+This project has provided important insights into the factors associated with depression among students, along with predictive models to identify individuals at risk. However, there are several areas where further research and development can enhance the outcomes. One key area for future work is the incorporation of longitudinal data, which would allow for the study of how depression risk factors change over time, offering a deeper understanding of causal relationships. Expanding the dataset to include individuals from a wider range of geographic, cultural, and socioeconomic backgrounds would also improve the generalizability of the findings.
+
+Additionally, including new variables, such as social media usage, physical activity levels, and access to mental health resources, could make the models more comprehensive. Another promising area is the development of real-time prediction systems that integrate with wearable devices or mobile applications to monitor lifestyle factors like sleep patterns and activity levels, enabling early interventions.
+
+Collaboration with mental health professionals is another important step, as their expertise can help interpret the findings and design effective, tailored interventions for individuals at risk. Ethical considerations, such as addressing privacy concerns and algorithmic bias, must also be prioritized to ensure the responsible use of predictive models. Finally, testing the models in real-world settings, such as schools, workplaces, and healthcare facilities, would provide valuable insights into their practical utility and effectiveness. By focusing on these areas, future work can build upon this project to create more robust and impactful tools for addressing mental health challenges. 
+
+# Conclusions 
+
+In conclusion, this project has helped us understand the important factors that contribute to depression among students and young professionals. We found that things like sleep habits, diet, work hours, and personal background can all affect someone’s risk of depression, but the main influential factors are still suicidal thoughts, academic pressure, and financial stress. Both through 10-fold cross-validation and out-of-sample performance, we observed that the Naive Bayes and stepwise GLM models had the highest recall, meaning they were most effective at correctly identifying individuals at risk of depression. By focusing on prediction rather than inference, the project offers practical tools that stakeholders can use to address mental health challenges effectively.
+
+For educational institutions, the insights gained from this study can guide the development of policies aimed at reducing academic stress and promoting mental well-being among students. Workplace stakeholders, including employers and human resource managers, can leverage these findings to create healthier work environments, such as balancing workloads and encouraging better work-life integration. Healthcare professionals and policymakers can also use the predictive models to develop early warning systems, enabling timely interventions for individuals at risk.
+
+The implications of this work highlight the importance of integrating data-driven approaches into mental health strategies. By identifying at-risk individuals early, stakeholders can implement targeted interventions that not only improve individual well-being but also contribute to healthier, more productive communities. The findings underline the urgent need for collaborative efforts among educators, employers, healthcare providers, and policymakers to address the growing mental health challenges faced by young populations. So, we hope that our project provides a foundation for these efforts, paving the way for future advancements in mental health research and practice.
