@@ -5,6 +5,11 @@ A machine learning project in R exploring factors associated with
 depression among students and young professionals, and building
 predictive models to identify at-risk individuals.
 
+
+## 📊 Full Report
+[View the full analysis here](https://vladyslava-stepanovska.github.io/student-depression-prediction/analysis.html)
+
+
 ## Overview
 
 This project analyzes variables such as academic pressure, sleep
